@@ -1,0 +1,45 @@
+configured: false
+image:
+  repository: ghcr.io/vvivid/trackapplyeasy
+  digest: ""
+replicaCount: 1
+identity:
+  issuer: https://auth.rd.vvivid.dev/realms/vvivid-rd
+  webClientID: trackapplyeasy-web
+  secretName: trackapplyeasy-identity
+  gatewayJWKSConfigMap: trackapplyeasy-gateway-jwks
+  mcpClientIDs:
+    - trackapplyeasy-chatgpt
+storage:
+  existingClaim: ""
+  storageClass: personal-local-retain
+  size: 5Gi
+origins:
+  public: https://work.vvivid.dev
+  private: https://work.lab.vvivid.dev
+mcp:
+  mode: gateway
+  resource: https://mcp.rd.lab.vvivid.dev/trackapplyeasy/mcp
+  audience: trackapplyeasy-mcp
+  gatewayIssuer: https://mcp.rd.lab.vvivid.dev
+routes:
+  publicEnabled: false
+  privateEnabled: false
+  publicTLSSecret: trackapplyeasy-public-tls
+  privateTLSSecret: trackapplyeasy-private-tls
+  publicCertificateReady: false
+  privateCertificateReady: false
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+    ephemeral-storage: 64Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+    ephemeral-storage: 256Mi
+provenance:
+  sourceRef: ""
+  sourceCommit: ""
+  workflowRun: ""
+  chartDigest: ""

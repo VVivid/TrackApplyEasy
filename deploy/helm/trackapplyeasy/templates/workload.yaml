@@ -1,0 +1,101 @@
+{{ include "trackapplyeasy.validate" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trackapplyeasy
+  labels: { app.kubernetes.io/name: trackapplyeasy }
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trackapplyeasy
+  labels: { app.kubernetes.io/name: trackapplyeasy }
+  annotations:
+    trackapplyeasy.vvivid.dev/source-commit: {{ .Values.provenance.sourceCommit | quote }}
+    trackapplyeasy.vvivid.dev/source-ref: {{ .Values.provenance.sourceRef | quote }}
+    trackapplyeasy.vvivid.dev/workflow-run: {{ .Values.provenance.workflowRun | quote }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: trackapplyeasy }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: trackapplyeasy }
+    spec:
+      serviceAccountName: trackapplyeasy
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, seccompProfile: { type: RuntimeDefault } }
+      initContainers:
+        - name: prepare-private-files
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          args: ["-prepare-secrets-source=/mounted-secrets", "-prepare-secrets-dest=/runtime-secrets"]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 100m, memory: 64Mi } }
+          volumeMounts:
+            - { name: identity, mountPath: /mounted-secrets, readOnly: true }
+            - { name: private-files, mountPath: /runtime-secrets }
+      containers:
+        - name: trackapplyeasy
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          args: ["-listen=:8090", "-db=/data/trackapplyeasy.sqlite", "-static=/static"]
+          ports: [ { name: http, containerPort: 8090 } ]
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          env:
+            - { name: TRACK_ORIGINS, value: {{ printf "%s,%s" .Values.origins.public .Values.origins.private | quote }} }
+            - { name: TRACK_OIDC_ISSUER, value: {{ .Values.identity.issuer | quote }} }
+            - { name: TRACK_WEB_CLIENT_ID, value: {{ .Values.identity.webClientID | quote }} }
+            - { name: TRACK_WEB_CLIENT_SECRET_FILE, value: /runtime-secrets/client-secret }
+            - { name: TRACK_SESSION_KEYS_FILE, value: /runtime-secrets/session-keys.json }
+            - { name: TRACK_API_AUDIENCE, value: "https://work.vvivid.dev/api/v1" }
+            - { name: TRACK_MCP_MODE, value: gateway }
+            - { name: TRACK_MCP_RESOURCE, value: {{ .Values.mcp.resource | quote }} }
+            - { name: TRACK_MCP_AUDIENCE, value: trackapplyeasy-mcp }
+            - { name: TRACK_GATEWAY_ISSUER, value: {{ .Values.mcp.gatewayIssuer | quote }} }
+            - { name: TRACK_GATEWAY_JWKS_FILE, value: /gateway/public.jwks.json }
+            - { name: TRACK_MCP_CLIENT_IDS, value: {{ join "," .Values.identity.mcpClientIDs | quote }} }
+          resources:
+{{ toYaml .Values.resources | indent 12 }}
+          startupProbe: { httpGet: { path: /health/ready, port: http }, failureThreshold: 30, periodSeconds: 5 }
+          readinessProbe: { httpGet: { path: /health/ready, port: http }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /health/live, port: http }, periodSeconds: 20 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: private-files, mountPath: /runtime-secrets, readOnly: true }
+            - { name: gateway, mountPath: /gateway, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: {{ default "trackapplyeasy-data" .Values.storage.existingClaim | quote }} }
+        - name: identity
+          secret: { secretName: {{ .Values.identity.secretName | quote }}, defaultMode: 0440 }
+        - name: gateway
+          configMap: { name: {{ .Values.identity.gatewayJWKSConfigMap | quote }} }
+        - name: private-files
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trackapplyeasy
+  labels: { app.kubernetes.io/name: trackapplyeasy }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: trackapplyeasy }
+  ports: [ { name: http, port: 8090, targetPort: http } ]
+{{- if not .Values.storage.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trackapplyeasy-data
+  annotations: { helm.sh/resource-policy: keep }
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storage.storageClass | quote }}
+  resources:
+    requests: { storage: {{ .Values.storage.size | quote }} }
+{{- end }}

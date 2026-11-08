@@ -1,0 +1,30 @@
+{{- range $visibility := list "public" "private" }}
+{{- $enabled := $.Values.routes.publicEnabled }}
+{{- $entrypoint := "websecure" }}
+{{- $origin := $.Values.origins.public }}
+{{- $tls := $.Values.routes.publicTLSSecret }}
+{{- if eq $visibility "private" }}
+  {{- $enabled = $.Values.routes.privateEnabled }}
+  {{- $entrypoint = "platform-tls" }}
+  {{- $origin = $.Values.origins.private }}
+  {{- $tls = $.Values.routes.privateTLSSecret }}
+{{- end }}
+{{- if $enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: trackapplyeasy-{{ $visibility }}
+spec:
+  entryPoints: [{{ $entrypoint }}]
+  routes:
+    - kind: Rule
+      match: >-
+        Host(`{{ trimPrefix "https://" $origin }}`) &&
+        (Path(`/`) || Path(`/cvs`) || PathPrefix(`/cvs/`) || Path(`/analysis`) || PathPrefix(`/analysis/`) ||
+        PathPrefix(`/_next/`) || Path(`/favicon.ico`) || Path(`/auth/login`) || Path(`/auth/callback`) || Path(`/auth/logout`) ||
+        Path(`/api/v1`) || PathPrefix(`/api/v1/`) || Path(`/.well-known/oauth-protected-resource/api/v1`))
+      services: [ { name: trackapplyeasy, port: 8090 } ]
+  tls: { secretName: {{ $tls }} }
+{{- end }}
+{{- end }}

@@ -1,0 +1,41 @@
+name: Retry existing release promotion
+on:
+  workflow_dispatch:
+    inputs:
+      release_record:
+        description: Exact JSON record from a completed Publish job (no credentials)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: trackapplyeasy-production-release
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production-promotion
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require one-time operator setup and merged source
+        env:
+          ENABLED: ${{ vars.TRACK_GITOPS_ENABLED }}
+          RELEASE_RECORD: ${{ inputs.release_record }}
+        run: |
+          test "$ENABLED" = true
+          python3 -c 'import json,os,subprocess; r=json.loads(os.environ["RELEASE_RECORD"]); subprocess.run(["git","merge-base","--is-ancestor",r["sourceCommit"],"origin/main"],check=True); open(os.environ["RUNNER_TEMP"]+"/release.json","w").write(json.dumps(r))'
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: VVivid
+          repositories: homelab-gitops
+          permission-contents: write
+      - env:
+          GITOPS_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python3 deploy/gitops/promote.py --release "$RUNNER_TEMP/release.json"

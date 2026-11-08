@@ -1,0 +1,81 @@
+name: Publish and promote
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+concurrency:
+  group: trackapplyeasy-production-release
+  cancel-in-progress: false
+jobs:
+  check:
+    uses: ./.github/workflows/checks.yml
+  publish:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: artifact-publication
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      record: ${{ steps.record.outputs.json }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: sh scripts/install-ci-tools.sh
+      - name: Authenticate only to this repository's GHCR publication
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/trackapplyeasy-docker
+          HELM_REGISTRY_CONFIG: ${{ runner.temp }}/trackapplyeasy-helm/registry.json
+        run: |
+          umask 077
+          mkdir -p "$DOCKER_CONFIG" "$(dirname "$HELM_REGISTRY_CONFIG")"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish a never-reused image and chart version
+        id: record
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/trackapplyeasy-docker
+          HELM_REGISTRY_CONFIG: ${{ runner.temp }}/trackapplyeasy-helm/registry.json
+        run: |
+          python3 deploy/gitops/publish.py --version "${GITHUB_REF_NAME#v}" --output "$RUNNER_TEMP/release.json"
+          printf 'json=%s\n' "$(jq -c . "$RUNNER_TEMP/release.json")" >> "$GITHUB_OUTPUT"
+          printf 'Published artifacts; initial GHCR package visibility must be public before promotion.\n' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/release.json" >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary registry credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/trackapplyeasy-docker" "$RUNNER_TEMP/trackapplyeasy-helm"
+  promote:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production-promotion
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require one-time operator setup
+        env:
+          ENABLED: ${{ vars.TRACK_GITOPS_ENABLED }}
+        run: test "$ENABLED" = true
+      - name: Mint token scoped to the private GitOps repository
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.GITOPS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: VVivid
+          repositories: homelab-gitops
+          permission-contents: write
+      - name: Verify anonymous artifacts and update only release-owned fields
+        env:
+          GITOPS_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_RECORD: ${{ needs.publish.outputs.record }}
+        run: |
+          python3 -c 'import os; open(os.environ["RUNNER_TEMP"]+"/release.json","w").write(os.environ["RELEASE_RECORD"])'
+          python3 deploy/gitops/promote.py --release "$RUNNER_TEMP/release.json"

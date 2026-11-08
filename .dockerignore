@@ -1,0 +1,13 @@
+.git
+.cache
+.secrets
+backups
+web/node_modules
+web/.next
+web/out
+web/test-results
+web/playwright-report
+web/tsconfig.tsbuildinfo
+*.sqlite*
+*.db*
+bin
