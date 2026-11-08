@@ -5,11 +5,13 @@ export function Dialog({
   onClose,
   children,
   wide = false,
+  onBack,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   wide?: boolean;
+  onBack?: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null),
     close = useRef(onClose);
@@ -36,6 +38,11 @@ export function Dialog({
         if (e.target === e.currentTarget) onClose();
       }}
     >
+      {onBack && (
+        <button className="text-button dialog-back" onClick={onBack}>
+          ← Back to details
+        </button>
+      )}
       <header className="dialog-head">
         <h2 id="dialog-title">{title}</h2>
         <button className="icon-button" onClick={onClose} aria-label="Close dialog">

@@ -50,16 +50,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db, now: time.Now}
-	var version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if version > 1 {
-		db.Close()
-		return nil, fmt.Errorf("database schema %d is newer than this application", version)
-	}
-	if _, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;` + schema); err != nil {
+	if err = s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
@@ -68,7 +59,37 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error                   { return s.db.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-const schema = `
+// Schema changes and user_version commit together. Reopening an existing
+// database must neither replay ALTER TABLE nor lower a newer schema version.
+func (s *Store) migrate() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err = tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version > 2 {
+		return fmt.Errorf("database schema %d is newer than this application", version)
+	}
+	if version == 0 {
+		if _, err = tx.Exec(schemaV1); err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		if _, err = tx.Exec(`ALTER TABLE cvs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN(0,1));
+ALTER TABLE cvs ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0);
+PRAGMA user_version=2;`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+const schemaV1 = `
 CREATE TABLE IF NOT EXISTS owners(id TEXT PRIMARY KEY,issuer TEXT NOT NULL,subject TEXT NOT NULL,label TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),UNIQUE(issuer,subject));
 CREATE TABLE IF NOT EXISTS cvs(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES owners(id),name TEXT NOT NULL,category TEXT NOT NULL,filename TEXT NOT NULL,sha256 TEXT NOT NULL,pdf BLOB NOT NULL,created_at TEXT NOT NULL,UNIQUE(owner,id));
 CREATE TABLE IF NOT EXISTS applications(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFERENCES owners(id),url TEXT NOT NULL,title TEXT NOT NULL,company TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN('Job','Internship')),applied_at TEXT NOT NULL DEFAULT '',rationale TEXT NOT NULL,status TEXT NOT NULL,cv_id TEXT,feedback TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(owner,id),FOREIGN KEY(owner,cv_id) REFERENCES cvs(owner,id),CHECK((applied_at='' AND status='Preparing') OR(applied_at<>'' AND status<>'Preparing' AND cv_id IS NOT NULL)));
@@ -79,7 +100,6 @@ CREATE TABLE IF NOT EXISTS facts(id TEXT PRIMARY KEY,owner TEXT NOT NULL REFEREN
 CREATE TABLE IF NOT EXISTS idempotency(owner TEXT NOT NULL REFERENCES owners(id),operation TEXT NOT NULL,key TEXT NOT NULL,request_hash TEXT NOT NULL,result BLOB NOT NULL,PRIMARY KEY(owner,operation,key));
 CREATE TABLE IF NOT EXISTS sessions(hash BLOB PRIMARY KEY,owner TEXT NOT NULL REFERENCES owners(id),host TEXT NOT NULL,cipher BLOB NOT NULL,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS logins(hash BLOB PRIMARY KEY,host TEXT NOT NULL,cipher BLOB NOT NULL,expires_at INTEGER NOT NULL);
-PRAGMA user_version=1;
 `
 
 func (s *Store) Enroll(ctx context.Context, issuer, subject, label string) (Owner, error) {

@@ -13,6 +13,7 @@ import {
   statuses,
 } from '../lib/api';
 import { Dialog } from './dialog';
+import { PDFDialog } from './pdf-dialog';
 import { useSession } from './session';
 
 type Filters = {
@@ -67,11 +68,20 @@ export function Applications() {
     [error, setError] = useState(''),
     [loading, setLoading] = useState(true),
     [revision, setRevision] = useState(0);
-  const [panel, setPanel] = useState<{
-    type: 'editor' | 'history' | 'pdf';
+  const [panel, setPanelState] = useState<{
+    type: 'details' | 'editor' | 'history' | 'pdf';
     app?: Application;
     cv?: CV;
+    returnToDetails?: boolean;
   } | null>(null);
+  const panelTrigger = useRef<HTMLElement | null>(null);
+  // Keep the original table trigger while navigating details, editor, history
+  // and PDF panels so closing the whole flow restores focus to that trigger.
+  function setPanel(next: typeof panel, trigger?: HTMLElement) {
+    if (!panel && next) panelTrigger.current = trigger || (document.activeElement as HTMLElement);
+    setPanelState(next);
+    if (!next) requestAnimationFrame(() => panelTrigger.current?.focus());
+  }
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setFilters({
@@ -191,7 +201,10 @@ export function Applications() {
             {result.total} {result.total === 1 ? 'application' : 'applications'}
           </span>
           {canWrite && (
-            <button className="primary" onClick={() => setPanel({ type: 'editor' })}>
+            <button
+              className="primary"
+              onClick={(e) => setPanel({ type: 'editor' }, e.currentTarget)}
+            >
               + Add application
             </button>
           )}
@@ -331,7 +344,7 @@ export function Applications() {
                 <td>
                   <button
                     className="job-title"
-                    onClick={() => setPanel({ type: 'editor', app: row })}
+                    onClick={(e) => setPanel({ type: 'details', app: row }, e.currentTarget)}
                   >
                     {row.title}
                   </button>
@@ -356,7 +369,9 @@ export function Applications() {
                   {row.cv_id ? (
                     <button
                       className="text-button cv-link"
-                      onClick={() => setPanel({ type: 'pdf', app: row, cv: cvFor(row.cv_id) })}
+                      onClick={(e) =>
+                        setPanel({ type: 'pdf', app: row, cv: cvFor(row.cv_id) }, e.currentTarget)
+                      }
                     >
                       {cvFor(row.cv_id)?.name || 'Exact PDF'}
                       <small>{cvFor(row.cv_id)?.sha256.slice(0, 8)}</small>
@@ -375,7 +390,7 @@ export function Applications() {
                 <td>
                   <button
                     className="response-link"
-                    onClick={() => setPanel({ type: 'history', app: row })}
+                    onClick={(e) => setPanel({ type: 'history', app: row }, e.currentTarget)}
                   >
                     {row.latest_summary ||
                       (row.applied_at ? 'Awaiting response' : 'Draft application')}
@@ -383,7 +398,7 @@ export function Applications() {
                   {row.latest_response && <small>{date(row.latest_response)}</small>}
                   <button
                     className="text-button mini"
-                    onClick={() => setPanel({ type: 'history', app: row })}
+                    onClick={(e) => setPanel({ type: 'history', app: row }, e.currentTarget)}
                   >
                     {canWrite && row.applied_at ? '+ Add response' : 'View history'}
                   </button>
@@ -544,6 +559,9 @@ export function Applications() {
           app={panel.app}
           cvs={cvs}
           readOnly={!canWrite}
+          onBack={
+            panel.returnToDetails ? () => setPanel({ type: 'details', app: panel.app }) : undefined
+          }
           onClose={() => setPanel(null)}
           onSaved={() => {
             reload();
@@ -551,41 +569,197 @@ export function Applications() {
           }}
         />
       )}
+      {panel?.type === 'details' && panel.app && (
+        <ApplicationDetails
+          app={panel.app}
+          cv={cvFor(panel.app.cv_id)}
+          canWrite={canWrite}
+          onClose={() => setPanel(null)}
+          onEdit={() => setPanel({ type: 'editor', app: panel.app, returnToDetails: true })}
+          onHistory={() => setPanel({ type: 'history', app: panel.app, returnToDetails: true })}
+          onPDF={() =>
+            setPanel({
+              type: 'pdf',
+              app: panel.app,
+              cv: cvFor(panel.app!.cv_id),
+              returnToDetails: true,
+            })
+          }
+        />
+      )}
       {panel?.type === 'history' && panel.app && (
         <ResponseHistory
           app={panel.app}
           canWrite={canWrite}
+          onBack={
+            panel.returnToDetails ? () => setPanel({ type: 'details', app: panel.app }) : undefined
+          }
           onClose={() => setPanel(null)}
           onSaved={(app) => {
-            setPanel({ type: 'history', app });
+            setPanel({ type: 'history', app, returnToDetails: panel.returnToDetails });
             reload();
           }}
         />
       )}
       {panel?.type === 'pdf' && (
-        <PDFDialog id={panel.app?.cv_id || ''} cv={panel.cv} onClose={() => setPanel(null)} />
+        <PDFDialog
+          id={panel.app?.cv_id || ''}
+          cv={panel.cv}
+          onClose={() => setPanel(null)}
+          onBack={
+            panel.returnToDetails ? () => setPanel({ type: 'details', app: panel.app }) : undefined
+          }
+        />
       )}
     </section>
   );
 }
+function ApplicationDetails({
+  app,
+  cv,
+  canWrite,
+  onClose,
+  onEdit,
+  onHistory,
+  onPDF,
+}: {
+  app: Application;
+  cv?: CV;
+  canWrite: boolean;
+  onClose: () => void;
+  onEdit: () => void;
+  onHistory: () => void;
+  onPDF: () => void;
+}) {
+  const [events, setEvents] = useState<ResponseEvent[]>([]),
+    [loading, setLoading] = useState(true),
+    [error, setError] = useState(''),
+    [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    api<ResponseEvent[]>('/applications/' + app.id + '/responses')
+      .then((items) => {
+        if (active) {
+          setEvents(items);
+          setError('');
+        }
+      })
+      .catch((err) => {
+        if (active) setError(err.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [app.id, app.revision, attempt]);
+  return (
+    <Dialog title={app.title} onClose={onClose}>
+      <div className="application-detail-actions">
+        <span className={'status status-' + app.status.toLowerCase().replaceAll(' ', '-')}>
+          {app.status}
+        </span>
+        {canWrite && (
+          <button className="primary" onClick={onEdit}>
+            ✎ Edit application
+          </button>
+        )}
+      </div>
+      <dl className="application-facts">
+        <div>
+          <dt>Company</dt>
+          <dd>{app.company}</dd>
+        </div>
+        <div>
+          <dt>Role type</dt>
+          <dd>{app.kind}</dd>
+        </div>
+        <div>
+          <dt>Submitted</dt>
+          <dd>{app.applied_at ? dateTime(app.applied_at) : 'Not submitted · draft'}</dd>
+        </div>
+        <div>
+          <dt>{app.applied_at ? 'Exact submitted CV' : 'CV to prepare'}</dt>
+          <dd>
+            {app.cv_id ? (
+              <button className="text-button" onClick={onPDF}>
+                {cv?.name || 'View exact PDF'}
+                {cv?.archived ? ' · Archived' : ''}
+                {cv && (
+                  <small>
+                    {cv.filename} · SHA256 {cv.sha256.slice(0, 12)}
+                  </small>
+                )}
+              </button>
+            ) : (
+              'No CV selected'
+            )}
+          </dd>
+        </div>
+      </dl>
+      {app.url && (
+        <p className="posting-link">
+          <a href={app.url} target="_blank" rel="noopener noreferrer">
+            View original posting ↗
+          </a>
+        </p>
+      )}
+      <section className="application-detail-section">
+        <h3>Why this role / job information</h3>
+        <p className="pre-wrap">{app.rationale || 'No job information or rationale recorded.'}</p>
+      </section>
+      <section className="application-detail-section">
+        <h3>Feedback / notes</h3>
+        <p className="pre-wrap">{app.feedback || 'No feedback or notes recorded.'}</p>
+      </section>
+      <section className="application-detail-section">
+        <div className="response-heading">
+          <h3>Responses</h3>
+          <button className="text-button" onClick={onHistory}>
+            {canWrite && app.applied_at ? '+ Add response / history' : 'View history'}
+          </button>
+        </div>
+        {loading ? (
+          <p role="status" className="loading">
+            Loading responses…
+          </p>
+        ) : error ? (
+          <p role="alert" className="error">
+            {error} <button onClick={() => setAttempt((n) => n + 1)}>Retry responses</button>
+          </p>
+        ) : (
+          <ResponseTimeline events={events} />
+        )}
+      </section>
+    </Dialog>
+  );
+}
+
 function ApplicationEditor({
   app,
   cvs,
   onClose,
   onSaved,
   readOnly,
+  onBack,
 }: {
   app?: Application;
   cvs: CV[];
   onClose: () => void;
   onSaved: () => void;
   readOnly: boolean;
+  onBack?: () => void;
 }) {
   const session = useSession(),
     intent = useIntent();
   const [error, setError] = useState(''),
     [saving, setSaving] = useState(false),
     [submitted, setSubmitted] = useState(!!app?.applied_at);
+  // Keep a saved archived draft selection visible, but prefer active versions
+  // for a new application. Archived historical submissions stay valid.
+  const selectableCVs = cvs.filter((cv) => !cv.archived || cv.id === app?.cv_id);
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -620,7 +794,7 @@ function ApplicationEditor({
     }
   }
   return (
-    <Dialog title={app ? app.title : 'Add application'} onClose={onClose}>
+    <Dialog title={app ? 'Edit application' : 'Add application'} onClose={onClose} onBack={onBack}>
       <form onSubmit={save}>
         <fieldset disabled={readOnly || saving}>
           <label>
@@ -696,16 +870,17 @@ function ApplicationEditor({
                 {submitted ? 'Exact submitted CV' : 'CV to prepare (optional)'}
                 <select name="cv_id" defaultValue={app?.cv_id || ''} required={submitted}>
                   <option value="">Select CV version</option>
-                  {cvs.map((cv) => (
+                  {selectableCVs.map((cv) => (
                     <option key={cv.id} value={cv.id}>
                       {cv.name} · {cv.sha256.slice(0, 8)}
+                      {cv.archived ? ' · Archived' : ''}
                     </option>
                   ))}
                 </select>
               </label>
-              {!cvs.length && (
+              {!selectableCVs.length && (
                 <p className="muted">
-                  Upload your original PDF in the CV library before recording a submission.
+                  Upload or restore a CV in the CV library before recording a submission.
                 </p>
               )}
             </>
@@ -735,11 +910,13 @@ function ResponseHistory({
   canWrite,
   onClose,
   onSaved,
+  onBack,
 }: {
   app: Application;
   canWrite: boolean;
   onClose: () => void;
   onSaved: (a: Application) => void;
+  onBack?: () => void;
 }) {
   const session = useSession(),
     intent = useIntent();
@@ -780,29 +957,14 @@ function ResponseHistory({
     }
   }
   return (
-    <Dialog title="Response history" onClose={onClose}>
+    <Dialog title="Response history" onClose={onClose} onBack={onBack}>
       <div className="detail-heading">
         <h3>{app.title}</h3>
         <p>
           {app.company} · <span className="status">{app.status}</span>
         </p>
       </div>
-      <ol className="timeline">
-        {events.map((event) => (
-          <li key={event.id}>
-            <div>
-              <strong>{event.summary}</strong>
-              <time>{dateTime(event.occurred_at)}</time>
-            </div>
-            <small>
-              {event.status}
-              {event.channel ? ' · ' + event.channel : ''}
-            </small>
-            <p className="pre-wrap">{event.body}</p>
-          </li>
-        ))}
-        {!events.length && <li className="muted">No responses recorded.</li>}
-      </ol>
+      <ResponseTimeline events={events} />
       {canWrite && app.applied_at ? (
         <form onSubmit={save}>
           <h3>Add a response</h3>
@@ -870,26 +1032,23 @@ function ResponseHistory({
     </Dialog>
   );
 }
-export function PDFDialog({ id, cv, onClose }: { id: string; cv?: CV; onClose: () => void }) {
+function ResponseTimeline({ events }: { events: ResponseEvent[] }) {
   return (
-    <Dialog title={cv?.name || 'Exact submitted CV'} wide onClose={onClose}>
-      <div className="pdf-meta">
-        <span>{cv?.filename}</span>
-        {cv && <code title={cv.sha256}>SHA256 {cv.sha256.slice(0, 16)}…</code>}
-        <a
-          href={'/api/v1/cvs/' + encodeURIComponent(id) + '/pdf'}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Open PDF ↗
-        </a>
-      </div>
-      <iframe
-        className="pdf-viewer"
-        title="Original CV PDF"
-        src={'/api/v1/cvs/' + encodeURIComponent(id) + '/pdf#view=FitH'}
-      />
-      <p className="muted">This is the original immutable PDF saved for this version.</p>
-    </Dialog>
+    <ol className="timeline">
+      {events.map((event) => (
+        <li key={event.id}>
+          <div>
+            <strong>{event.summary}</strong>
+            <time>{dateTime(event.occurred_at)}</time>
+          </div>
+          <small>
+            {event.status}
+            {event.channel ? ' · ' + event.channel : ''}
+          </small>
+          <p className="pre-wrap">{event.body}</p>
+        </li>
+      ))}
+      {!events.length && <li className="muted">No responses recorded.</li>}
+    </ol>
   );
 }

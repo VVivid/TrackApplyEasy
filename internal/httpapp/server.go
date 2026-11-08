@@ -92,6 +92,20 @@ func New(s *store.Store, auth *identity.Manager, mcp http.Handler, static fs.FS)
 		out, err := s.CVs(r.Context(), p.Actor)
 		respond(w, out, err)
 	})
+	route("PUT /api/v1/cvs/{id}/archive", store.Write, func(w http.ResponseWriter, r *http.Request) {
+		var in store.CVArchiveInput
+		if !decode(w, r, &in) {
+			return
+		}
+		if in.ID != "" && in.ID != r.PathValue("id") {
+			fail(w, store.ErrInvalid)
+			return
+		}
+		in.ID = r.PathValue("id")
+		p, _ := identity.FromContext(r.Context())
+		out, err := s.SetCVArchived(r.Context(), p.Actor, in)
+		respond(w, out, err)
+	})
 	route("POST /api/v1/cvs", store.Write, func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, store.MaxPDF+(1<<20))
 		if err := r.ParseMultipartForm(store.MaxPDF + (1 << 20)); err != nil {
@@ -257,7 +271,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src 'self' blob:; object-src 'none'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; worker-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' blob:; img-src 'self' data: blob:; frame-src 'self' blob:; object-src 'none'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

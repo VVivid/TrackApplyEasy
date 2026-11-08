@@ -178,7 +178,7 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 	}
 	defer session.Close()
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 11 {
+	if err != nil || len(tools.Tools) != 12 {
 		t.Fatalf("tools/list = %+v %v", tools, err)
 	}
 	in := store.ApplicationInput{IdempotencyKey: "sdk-create-001", Title: "Synthetic SDK role", Company: "Example", Kind: "Job", AppliedAt: "2026-01-02T10:00:00Z", CVID: cv.ID, Status: "Applied"}
@@ -190,6 +190,46 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 	var page store.Page
 	if json.NewDecoder(res.Body).Decode(&page) != nil || page.Total != 1 || page.Items[0].Title != in.Title {
 		t.Fatalf("shared app data %+v", page)
+	}
+	archiveInput := store.CVArchiveInput{IdempotencyKey: "sdk-archive-001", ID: cv.ID, ExpectedRevision: cv.Revision, Archived: new(true)}
+	archived, err := session.CallTool(t.Context(), &sdk.CallToolParams{Name: "set_cv_archived", Arguments: archiveInput})
+	if err != nil || archived.IsError {
+		t.Fatalf("SDK archive: %+v %v", archived, err)
+	}
+	res = f.request(t, "GET", "/api/v1/cvs", nil, "", cookie, "")
+	var cvs []store.CV
+	if json.NewDecoder(res.Body).Decode(&cvs) != nil || len(cvs) != 1 || !cvs[0].Archived || cvs[0].Revision != 2 || cvs[0].Applications != 1 {
+		t.Fatalf("shared archived CV: %+v", cvs)
+	}
+	for _, payload := range []string{
+		`{"idempotency_key":"http-invalid-archive","expected_revision":2}`,
+		`{"idempotency_key":"http-invalid-archive","expected_revision":2,"archived":null}`,
+		`{"idempotency_key":"http-invalid-archive","expected_revision":2,"archived":false,"id":"different"}`,
+	} {
+		res = f.request(t, "PUT", "/api/v1/cvs/"+cv.ID+"/archive", strings.NewReader(payload), "application/json", cookie, csrf)
+		if res.StatusCode != 400 {
+			t.Fatalf("invalid archive body: %d", res.StatusCode)
+		}
+	}
+	restore := `{"idempotency_key":"http-restore-001","expected_revision":2,"archived":false}`
+	res = f.request(t, "PUT", "/api/v1/cvs/"+cv.ID+"/archive", strings.NewReader(restore), "application/json", cookie, "")
+	if res.StatusCode != 403 {
+		t.Fatalf("archive requires CSRF: %d", res.StatusCode)
+	}
+	res = f.request(t, "PUT", "/api/v1/cvs/"+cv.ID+"/archive", strings.NewReader(restore), "application/json", cookie, csrf)
+	var restored store.CV
+	if res.StatusCode != 200 || json.NewDecoder(res.Body).Decode(&restored) != nil || restored.Archived || restored.Revision != 3 || restored.ID != cv.ID || restored.SHA256 != cv.SHA256 {
+		t.Fatalf("browser restore: %+v %d", restored, res.StatusCode)
+	}
+	// The same successful MCP intent remains an exact replay after restoration;
+	// replaying it must not archive the CV again.
+	archived, err = session.CallTool(t.Context(), &sdk.CallToolParams{Name: "set_cv_archived", Arguments: archiveInput})
+	if err != nil || archived.IsError {
+		t.Fatalf("SDK archive retry: %+v %v", archived, err)
+	}
+	stale := f.request(t, "PUT", "/api/v1/cvs/"+cv.ID+"/archive", strings.NewReader(`{"idempotency_key":"http-stale-archive","expected_revision":1,"archived":true}`), "application/json", cookie, csrf)
+	if stale.StatusCode != 409 {
+		t.Fatalf("stale archive: %d", stale.StatusCode)
 	}
 
 	if _, err = f.s.Enroll(t.Context(), f.provider.URL(), "other-test-subject", "Other synthetic owner"); err != nil {
@@ -210,9 +250,13 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 	if err != nil || !forbiddenWrite.IsError {
 		t.Fatalf("read-only SDK write: %+v %v", forbiddenWrite, err)
 	}
+	forbiddenArchive, err := otherSession.CallTool(t.Context(), &sdk.CallToolParams{Name: "set_cv_archived", Arguments: store.CVArchiveInput{IdempotencyKey: "other-archive-001", ID: cv.ID, ExpectedRevision: 3, Archived: new(true)}})
+	if err != nil || !forbiddenArchive.IsError {
+		t.Fatalf("other owner/read-only SDK archive: %+v %v", forbiddenArchive, err)
+	}
 	pdf := f.request(t, "GET", "/api/v1/cvs/"+cv.ID+"/pdf", nil, "", cookie, "")
 	raw, _ := io.ReadAll(pdf.Body)
-	if pdf.StatusCode != 200 || !bytes.HasPrefix(raw, []byte("%PDF-")) || pdf.Header.Get("Content-Type") != "application/pdf" {
+	if pdf.StatusCode != 200 || !bytes.HasPrefix(raw, []byte("%PDF-")) || pdf.Header.Get("Content-Type") != "application/pdf" || pdf.Header.Get("Content-Security-Policy") != "sandbox; default-src 'none'" {
 		t.Fatalf("PDF %d", pdf.StatusCode)
 	}
 	denied := f.request(t, "POST", "/api/v1/applications", strings.NewReader(`{}`), "application/json", cookie, "")

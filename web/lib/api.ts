@@ -34,6 +34,8 @@ export type CV = {
   bytes: number;
   created_at: string;
   applications: number;
+  archived: boolean;
+  revision: number;
 };
 export type ResponseEvent = {
   id: string;

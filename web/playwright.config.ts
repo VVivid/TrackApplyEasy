@@ -1,9 +1,22 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: 'tests',
   fullyParallel: false,
   workers: 1,
   reporter: 'list',
+  projects: [
+    { name: 'chromium', testIgnore: 'mobile-pdf.spec.ts', use: { browserName: 'chromium' } },
+    {
+      name: 'chromium-mobile-android',
+      testMatch: 'mobile-pdf.spec.ts',
+      use: { ...devices['Pixel 7'], browserName: 'chromium' },
+    },
+    {
+      name: 'webkit-mobile',
+      testMatch: 'mobile-pdf.spec.ts',
+      use: { ...devices['iPhone 13'], browserName: 'webkit' },
+    },
+  ],
   use: { baseURL: 'https://127.0.0.1:8099', ignoreHTTPSErrors: true, trace: 'retain-on-failure' },
   webServer: {
     command:

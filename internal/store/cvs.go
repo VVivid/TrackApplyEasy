@@ -29,17 +29,24 @@ func (s *Store) UploadCV(ctx context.Context, a Actor, in UploadInput) (CV, erro
 	}
 	hash := sha256.Sum256(in.PDF)
 	in.Digest = hex.EncodeToString(hash[:])
-	return write(ctx, s, a, "cv.upload", in.IdempotencyKey, in, func(tx *sql.Tx) (CV, error) {
-		cv := CV{ID: ID(), Name: in.Name, Category: in.Category, Filename: in.Filename, SHA256: in.Digest, Bytes: len(in.PDF), CreatedAt: s.timestamp()}
+	cv, err := write(ctx, s, a, "cv.upload", in.IdempotencyKey, in, func(tx *sql.Tx) (CV, error) {
+		cv := CV{ID: ID(), Name: in.Name, Category: in.Category, Filename: in.Filename, SHA256: in.Digest, Bytes: len(in.PDF), CreatedAt: s.timestamp(), Revision: 1}
 		_, err := tx.ExecContext(ctx, `INSERT INTO cvs(id,owner,name,category,filename,sha256,pdf,created_at)VALUES(?,?,?,?,?,?,?,?)`, cv.ID, a.Owner, cv.Name, cv.Category, cv.Filename, cv.SHA256, in.PDF, cv.CreatedAt)
 		return cv, err
 	})
+	if err == nil && cv.Revision == 0 {
+		// Version 1 upload receipts predate archive metadata. Preserve the exact
+		// uploaded version while reading its current state, rather than making a
+		// replay appear active after that version has been archived.
+		err = s.db.QueryRowContext(ctx, `SELECT archived,revision FROM cvs WHERE owner=? AND id=?`, a.Owner, cv.ID).Scan(&cv.Archived, &cv.Revision)
+	}
+	return cv, err
 }
 func (s *Store) CVs(ctx context.Context, a Actor) ([]CV, error) {
 	if err := a.Require(Read); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.name,c.category,c.filename,c.sha256,length(c.pdf),c.created_at,(SELECT count(*) FROM applications a WHERE a.owner=c.owner AND a.cv_id=c.id AND a.applied_at<>'') FROM cvs c WHERE c.owner=? ORDER BY c.created_at DESC,c.id DESC LIMIT 1000`, a.Owner)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+cvColumns+` FROM cvs c WHERE c.owner=? ORDER BY c.created_at DESC,c.id DESC LIMIT 1000`, a.Owner)
 	if err != nil {
 		return nil, err
 	}
@@ -47,20 +54,50 @@ func (s *Store) CVs(ctx context.Context, a Actor) ([]CV, error) {
 	out := []CV{}
 	for rows.Next() {
 		var c CV
-		if err = rows.Scan(&c.ID, &c.Name, &c.Category, &c.Filename, &c.SHA256, &c.Bytes, &c.CreatedAt, &c.Applications); err != nil {
+		if err = rows.Scan(&c.ID, &c.Name, &c.Category, &c.Filename, &c.SHA256, &c.Bytes, &c.CreatedAt, &c.Applications, &c.Archived, &c.Revision); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
+
+const cvColumns = `c.id,c.name,c.category,c.filename,c.sha256,length(c.pdf),c.created_at,(SELECT count(*) FROM applications a WHERE a.owner=c.owner AND a.cv_id=c.id AND a.applied_at<>''),c.archived,c.revision`
+
+// Archiving changes only library metadata. The PDF and all application
+// references remain available, including exact submitted versions.
+func (s *Store) SetCVArchived(ctx context.Context, a Actor, in CVArchiveInput) (CV, error) {
+	if !bounded(in.ID, 1, 64) || in.ExpectedRevision < 1 || in.Archived == nil {
+		return CV{}, ErrInvalid
+	}
+	return write(ctx, s, a, "cv.archive", in.IdempotencyKey, in, func(tx *sql.Tx) (CV, error) {
+		var revision int
+		err := tx.QueryRowContext(ctx, `SELECT revision FROM cvs WHERE owner=? AND id=?`, a.Owner, in.ID).Scan(&revision)
+		if errors.Is(err, sql.ErrNoRows) {
+			return CV{}, ErrNotFound
+		}
+		if err != nil {
+			return CV{}, err
+		}
+		if revision != in.ExpectedRevision {
+			return CV{}, ErrConflict
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE cvs SET archived=?,revision=revision+1 WHERE owner=? AND id=? AND revision=?`, *in.Archived, a.Owner, in.ID, in.ExpectedRevision); err != nil {
+			return CV{}, err
+		}
+		var cv CV
+		err = tx.QueryRowContext(ctx, `SELECT `+cvColumns+` FROM cvs c WHERE c.owner=? AND c.id=?`, a.Owner, in.ID).Scan(&cv.ID, &cv.Name, &cv.Category, &cv.Filename, &cv.SHA256, &cv.Bytes, &cv.CreatedAt, &cv.Applications, &cv.Archived, &cv.Revision)
+		return cv, err
+	})
+}
+
 func (s *Store) PDF(ctx context.Context, a Actor, id string) (CV, []byte, error) {
 	if err := a.Require(Read); err != nil {
 		return CV{}, nil, err
 	}
 	var c CV
 	var pdf []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,category,filename,sha256,length(pdf),created_at,pdf FROM cvs WHERE owner=? AND id=?`, a.Owner, id).Scan(&c.ID, &c.Name, &c.Category, &c.Filename, &c.SHA256, &c.Bytes, &c.CreatedAt, &pdf)
+	err := s.db.QueryRowContext(ctx, `SELECT `+cvColumns+`,c.pdf FROM cvs c WHERE c.owner=? AND c.id=?`, a.Owner, id).Scan(&c.ID, &c.Name, &c.Category, &c.Filename, &c.SHA256, &c.Bytes, &c.CreatedAt, &c.Applications, &c.Archived, &c.Revision, &pdf)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}

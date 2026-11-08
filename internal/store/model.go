@@ -49,6 +49,14 @@ type CV struct {
 	Bytes        int    `json:"bytes"`
 	CreatedAt    string `json:"created_at"`
 	Applications int    `json:"applications"`
+	Archived     bool   `json:"archived"`
+	Revision     int    `json:"revision"`
+}
+type CVArchiveInput struct {
+	IdempotencyKey   string `json:"idempotency_key"`
+	ID               string `json:"id"`
+	ExpectedRevision int    `json:"expected_revision"`
+	Archived         *bool  `json:"archived"`
 }
 type Application struct {
 	ID             string `json:"id"`

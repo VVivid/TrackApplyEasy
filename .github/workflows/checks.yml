@@ -27,7 +27,7 @@ jobs:
         run: |
           sh scripts/install-ci-tools.sh
           npm ci --prefix web --no-fund --no-audit
-          PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" npm --prefix web exec -- playwright install --with-deps chromium
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright" npm --prefix web exec -- playwright install --with-deps chromium webkit
       - name: Validate application, SQLite, OIDC, MCP, chart and release contracts
         run: |
           make check test race build chart-test browser-test

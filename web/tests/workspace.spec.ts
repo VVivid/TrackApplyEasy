@@ -1,8 +1,6 @@
 import { reportDay, reportInputToISO } from '../lib/api';
 import { expect, Page, test } from '@playwright/test';
-const pdf = Buffer.from(
-  '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 300]/Contents 4 0 R>>endobj\n4 0 obj<</Length 0>>stream\n\nendstream\nendobj\ntrailer<</Root 1 0 R>>\n%%EOF\n',
-);
+import { syntheticPDF as pdf } from './synthetic-pdf';
 test('production export signs in, saves exact PDF, tracks responses and analyzes real data', async ({
   page,
 }) => {
@@ -28,11 +26,16 @@ test('production export signs in, saves exact PDF, tracks responses and analyzes
   await expect(
     page.getByRole('heading', { name: 'Synthetic browser CV', exact: true }),
   ).toBeVisible();
-  await page.getByRole('button', { name: 'View PDF', exact: true }).click();
+  await page
+    .locator('.cv-card')
+    .filter({ has: page.getByRole('heading', { name: 'Synthetic browser CV', exact: true }) })
+    .getByRole('button', { name: 'View PDF', exact: true })
+    .click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  const src = await page.getByTitle('Original CV PDF').getAttribute('src');
-  expect(src).toMatch(/^\/api\/v1\/cvs\/.+\/pdf#view=FitH$/);
-  const saved = await page.request.get(src!.split('#')[0]);
+  await expect(page.getByRole('img', { name: 'PDF page 1 of 2' })).toBeVisible();
+  const src = await page.getByRole('link', { name: 'Open original PDF' }).getAttribute('href');
+  expect(src).toMatch(/^\/api\/v1\/cvs\/.+\/pdf$/);
+  const saved = await page.request.get(src!);
   expect(saved.status()).toBe(200);
   expect(await saved.body()).toEqual(pdf);
   await page.getByRole('button', { name: 'Close dialog' }).click();
@@ -42,12 +45,42 @@ test('production export signs in, saves exact PDF, tracks responses and analyzes
     .getByRole('textbox', { name: 'Job title', exact: true })
     .fill('Synthetic browser role');
   await page.getByRole('textbox', { name: 'Company', exact: true }).fill('Example organization');
+  await page
+    .getByRole('textbox', { name: 'Posting URL', exact: true })
+    .fill('https://example.test/synthetic-role');
+  await page
+    .getByRole('textbox', { name: 'Why this role', exact: true })
+    .fill('Synthetic job information and rationale.');
+  await page
+    .getByRole('textbox', { name: 'Feedback / notes', exact: true })
+    .fill('Synthetic saved notes.');
   await page.getByRole('checkbox', { name: 'Already submitted' }).check();
   await page.getByLabel('Exact submitted CV').selectOption({ index: 1 });
   await page.getByRole('button', { name: 'Save application', exact: true }).click();
   await expect(
     page.getByRole('button', { name: 'Synthetic browser role', exact: true }),
   ).toBeVisible();
+  await page.getByRole('button', { name: 'Synthetic browser role', exact: true }).click();
+  await expect(
+    page.getByRole('dialog').getByText('Synthetic job information and rationale.', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('dialog').getByText('Synthetic saved notes.', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('dialog').getByRole('link', { name: 'View original posting' }),
+  ).toHaveAttribute('href', 'https://example.test/synthetic-role');
+  await expect(page.getByRole('dialog').locator('form')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Edit application', exact: false }).click();
+  await expect(page.getByRole('textbox', { name: 'Job title', exact: true })).toHaveValue(
+    'Synthetic browser role',
+  );
+  await page.getByRole('button', { name: 'Back to details', exact: false }).click();
+  await expect(page.getByRole('dialog').locator('form')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(
+    page.getByRole('button', { name: 'Synthetic browser role', exact: true }),
+  ).toBeFocused();
   await page.getByRole('button', { name: '+ Add response', exact: true }).click();
   await page.getByRole('combobox', { name: 'Stage', exact: true }).selectOption('Interview');
   await page
@@ -225,7 +258,7 @@ test('confirmed same-metadata uploads create distinct immutable PDF versions', a
   await openCVLibrary(page);
   const name = 'Synthetic repeated versions',
     keys: string[] = [],
-    changed = Buffer.from(pdf.toString().replace('300 300', '301 300'));
+    changed = Buffer.from(pdf.toString().replace('300 420', '301 420'));
   expect(changed.length).toBe(pdf.length);
   await page.route('**/api/v1/cvs', (route) => {
     if (route.request().method() === 'POST') keys.push(uploadKey(route.request().postData()));
@@ -322,4 +355,93 @@ test('confirmed upload stays successful when refreshing the CV list fails', asyn
   expect(keys).toHaveLength(2);
   expect(keys[0]).not.toBe(keys[1]);
   expect(await savedCVs(page, name)).toHaveLength(2);
+});
+
+test('CV library searches metadata, defaults to active only, and archives and restores exact versions', async ({
+  page,
+}) => {
+  await openCVLibrary(page);
+  const name = 'Synthetic archive library';
+  await fillCVUpload(page, name);
+  await page
+    .getByRole('textbox', { name: 'Category', exact: true })
+    .fill('Synthetic archive category');
+  await page.getByRole('button', { name: '↑ Upload PDF' }).click();
+  const card = page
+    .locator('.cv-card')
+    .filter({ has: page.getByRole('heading', { name, exact: true }) });
+  await expect(card).toBeVisible();
+  const before = (await (await page.request.get('/api/v1/cvs')).json()).find(
+    (cv: { name: string }) => cv.name === name,
+  );
+  await expect(page.getByRole('switch', { name: 'Active only', exact: true })).toBeChecked();
+  for (const query of [name.toUpperCase(), 'archive category', 'synthetic-repeat.pdf']) {
+    await page.getByRole('textbox', { name: 'Search CVs', exact: true }).fill(query);
+    await expect(card).toBeVisible();
+  }
+  await page
+    .getByRole('textbox', { name: 'Search CVs', exact: true })
+    .fill('No synthetic CV with this metadata');
+  await expect(page.getByRole('heading', { name: 'No matching CVs.', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search CVs', exact: true }).fill(name);
+  await card.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(card).toHaveCount(0);
+  await page.getByRole('switch', { name: 'Active only', exact: true }).uncheck();
+  await expect(card.getByText('Archived', { exact: true })).toBeVisible();
+  const archived = (await (await page.request.get('/api/v1/cvs')).json()).find(
+    (cv: { id: string }) => cv.id === before.id,
+  );
+  expect(archived).toEqual({ ...before, archived: true, revision: before.revision + 1 });
+  expect(await (await page.request.get(`/api/v1/cvs/${before.id}/pdf`)).body()).toEqual(pdf);
+  await page.reload();
+  await expect(page.getByRole('switch', { name: 'Active only', exact: true })).toBeChecked();
+  await expect(card).toHaveCount(0);
+  await page.getByRole('switch', { name: 'Active only', exact: true }).uncheck();
+  await card.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(card.getByText('Active', { exact: true })).toBeVisible();
+  await page.getByRole('switch', { name: 'Active only', exact: true }).check();
+  await expect(card).toBeVisible();
+  const restored = (await (await page.request.get('/api/v1/cvs')).json()).find(
+    (cv: { id: string }) => cv.id === before.id,
+  );
+  expect(restored).toEqual({ ...before, revision: before.revision + 2 });
+});
+
+test('an ambiguous archive retries the original intent and read-only users see no archive actions', async ({
+  page,
+}) => {
+  await openCVLibrary(page);
+  const name = 'Synthetic archive uncertain';
+  await fillCVUpload(page, name);
+  await page.getByRole('button', { name: '↑ Upload PDF' }).click();
+  const card = page
+    .locator('.cv-card')
+    .filter({ has: page.getByRole('heading', { name, exact: true }) });
+  const keys: string[] = [];
+  await page.route('**/api/v1/cvs/*/archive', async (route) => {
+    keys.push(route.request().postDataJSON().idempotency_key);
+    if (keys.length === 1) {
+      const committed = await route.fetch();
+      expect(committed.ok()).toBe(true);
+      return route.abort('connectionreset');
+    }
+    return route.continue();
+  });
+  await card.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(card.getByRole('alert')).toBeVisible();
+  await card.getByRole('button', { name: 'Archive', exact: true }).click();
+  await expect(card).toHaveCount(0);
+  expect(keys).toHaveLength(2);
+  expect(keys[0]).toBe(keys[1]);
+  await page.route('**/api/v1/session', async (route) => {
+    const response = await route.fetch();
+    const session = await response.json();
+    return route.fulfill({ response, json: { ...session, scopes: ['trackapplyeasy:read'] } });
+  });
+  await page.reload();
+  await page.getByRole('switch', { name: 'Active only', exact: true }).uncheck();
+  await expect(card).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Archive', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '↑ Upload PDF' })).toHaveCount(0);
 });
