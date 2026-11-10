@@ -689,16 +689,29 @@ legend {
   color: var(--muted);
   margin-bottom: 15px;
 }
+.pdf-reader {
+  position: relative;
+  margin-bottom: 10px;
+}
 .pdf-viewport {
   border: 1px solid var(--line);
   background: var(--surface);
   width: 100%;
-  max-height: 68dvh;
+  height: 68dvh;
   min-height: 80px;
   overflow: auto;
+  /* Painting or hiding the page must not change its measured fit width. */
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   border-radius: 5px;
-  margin-bottom: 10px;
+}
+.pdf-status {
+  /* Loading and error messages share the reserved pane without shifting it. */
+  position: absolute;
+  inset: 1px 1px auto;
+  max-height: calc(100% - 2px);
+  margin: 0;
+  overflow: auto;
 }
 .pdf-viewport canvas {
   display: block;
@@ -738,17 +751,23 @@ legend {
   flex-wrap: wrap;
   margin-bottom: 16px;
 }
-.application-facts {
+.application-facts,
+.job-facts {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  gap: 12px 16px;
+  margin: 0;
 }
-.application-facts dt {
+.application-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.application-facts dt,
+.job-facts dt {
   color: var(--muted);
   font-size: 11px;
-  margin-bottom: 5px;
+  margin-bottom: 3px;
 }
-.application-facts dd {
+.application-facts dd,
+.job-facts dd {
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -758,7 +777,11 @@ legend {
   font-size: 10px;
   margin-top: 4px;
 }
-.application-detail-section {
+.posting-link {
+  margin-top: 12px;
+}
+.application-detail-section,
+.job-information {
   border-top: 1px solid var(--soft);
   padding-top: 18px;
   margin-top: 20px;
@@ -769,6 +792,85 @@ legend {
 }
 .application-detail-section p {
   overflow-wrap: anywhere;
+}
+.job-information {
+  display: grid;
+  gap: 20px;
+  overflow-wrap: anywhere;
+}
+.job-overview {
+  display: grid;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.job-facts {
+  grid-template-columns: repeat(auto-fit, minmax(min(125px, 100%), 1fr));
+}
+.job-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.job-tags li {
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.job-section {
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.job-section h3 {
+  margin: 0;
+  color: var(--heading);
+  font-weight: 600;
+}
+.job-requirements {
+  margin: 0;
+  padding-inline-start: 20px;
+}
+.job-requirements li::marker {
+  color: var(--accent);
+}
+.job-agent-note {
+  padding: 11px 14px;
+  border-inline-start: 3px solid var(--purple);
+  border-radius: 7px;
+  background: var(--purple-bg);
+}
+.job-agent-note h3 {
+  color: var(--purple);
+}
+.job-source {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.job-source summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  color: var(--accent);
+}
+.job-source summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.job-source > div {
+  padding: 0 14px 12px;
+}
+.job-source p {
+  margin-bottom: 10px;
+  color: var(--muted);
 }
 .response-heading h3 {
   margin-bottom: 0;
@@ -1296,7 +1398,7 @@ legend {
     gap: 0;
   }
   .application-facts {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .dialog {
     padding: 18px;

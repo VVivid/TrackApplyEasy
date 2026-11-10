@@ -188,24 +188,30 @@ export function PDFDialog({
           </select>
         </label>
       </div>
-      {error && (
-        <p className="error" role="alert">
-          {error} <button onClick={() => setAttempt((a) => a + 1)}>Retry PDF</button>
-        </p>
-      )}
-      {(loading || rendering) && !error && (
-        <p className="loading" role="status">
-          {loading ? 'Loading PDF…' : 'Rendering page…'}
-        </p>
-      )}
-      <div className="pdf-viewport" ref={containerRef} aria-busy={(loading || rendering) && !error}>
-        {pdfDocument && (
-          <canvas
-            ref={canvasRef}
-            role="img"
-            aria-label={`PDF page ${pageNumber} of ${pdfDocument.numPages}`}
-            hidden={loading || rendering || !!error}
-          />
+      <div className="pdf-reader">
+        <div
+          className="pdf-viewport"
+          ref={containerRef}
+          aria-busy={(loading || rendering) && !error}
+        >
+          {pdfDocument && (
+            <canvas
+              ref={canvasRef}
+              role="img"
+              aria-label={`PDF page ${pageNumber} of ${pdfDocument.numPages}`}
+              hidden={loading || rendering || !!error}
+            />
+          )}
+        </div>
+        {error && (
+          <p className="error pdf-status" role="alert">
+            {error} <button onClick={() => setAttempt((a) => a + 1)}>Retry PDF</button>
+          </p>
+        )}
+        {(loading || rendering) && !error && (
+          <p className="loading pdf-status" role="status">
+            {loading ? 'Loading PDF…' : 'Rendering page…'}
+          </p>
         )}
       </div>
       <p className="muted">This is the original immutable PDF saved for this version.</p>

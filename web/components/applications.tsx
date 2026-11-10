@@ -13,6 +13,7 @@ import {
   statuses,
 } from '../lib/api';
 import { Dialog } from './dialog';
+import { JobInformation } from './job-information';
 import { PDFDialog } from './pdf-dialog';
 import { useSession } from './session';
 
@@ -706,10 +707,7 @@ function ApplicationDetails({
           </a>
         </p>
       )}
-      <section className="application-detail-section">
-        <h3>Why this role / job information</h3>
-        <p className="pre-wrap">{app.rationale || 'No job information or rationale recorded.'}</p>
-      </section>
+      <JobInformation rationale={app.rationale} />
       <section className="application-detail-section">
         <h3>Feedback / notes</h3>
         <p className="pre-wrap">{app.feedback || 'No feedback or notes recorded.'}</p>

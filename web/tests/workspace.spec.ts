@@ -1,6 +1,10 @@
 import { reportDay, reportInputToISO } from '../lib/api';
 import { expect, Page, test } from '@playwright/test';
 import { syntheticPDF as pdf } from './synthetic-pdf';
+
+// Match desktop browsers where a scrollbar can take up layout space.
+test.use({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } });
+
 test('production export signs in, saves exact PDF, tracks responses and analyzes real data', async ({
   page,
 }) => {
@@ -254,6 +258,81 @@ async function savedCVs(page: Page, name: string) {
     .map(({ id, name }) => ({ id, name }));
 }
 
+test.describe('desktop PDF with classic scrollbars', () => {
+  test.use({
+    viewport: { width: 1912, height: 966 },
+    deviceScaleFactor: 2,
+  });
+
+  test('the reading pane stays stable through loading, zoom and resize', async ({ page }) => {
+    await openCVLibrary(page);
+    const name = 'Synthetic desktop reader';
+    await fillCVUpload(page, name);
+    await page.getByRole('button', { name: '↑ Upload PDF' }).click();
+    const card = page
+      .locator('.cv-card')
+      .filter({ has: page.getByRole('heading', { name, exact: true }) });
+    // Exercise classic scrollbars even when the host uses overlay scrollbars.
+    await page.addStyleTag({
+      content: '.pdf-viewport::-webkit-scrollbar { width: 15px; height: 15px; }',
+    });
+    let releasePDF!: () => void;
+    const heldPDF = new Promise<void>((resolve) => {
+      releasePDF = resolve;
+    });
+    await page.route('**/api/v1/cvs/*/pdf', async (route) => {
+      await heldPDF;
+      await route.continue();
+    });
+
+    const dialog = page.getByRole('dialog');
+    const viewport = dialog.locator('.pdf-viewport');
+    const layout = () =>
+      viewport.evaluate((pane) => {
+        const frame = pane.closest('dialog')!.getBoundingClientRect();
+        const bounds = pane.getBoundingClientRect();
+        return {
+          paneWidth: pane.clientWidth,
+          paneHeight: bounds.height,
+          gutterAndBorders: bounds.width - pane.clientWidth,
+          dialogTop: frame.top,
+          dialogHeight: frame.height,
+        };
+      });
+    const paintedPage = () =>
+      viewport.evaluate((pane) => {
+        const canvas = pane.querySelector('canvas');
+        if (!canvas || canvas.hidden) return null;
+        const { width, height } = canvas;
+        const [red, , blue] = canvas
+          .getContext('2d')!
+          .getImageData(Math.floor(width / 2), Math.floor(height / 2), 1, 1).data;
+        return {
+          blueCenter: red < 80 && blue > 150,
+          withinPixelBudget: width * height <= 4_000_000,
+          zoom: canvas.getBoundingClientRect().width / (pane.clientWidth - 2),
+        };
+      });
+
+    await card.getByRole('button', { name: 'View PDF', exact: true }).click();
+    await expect(dialog.getByRole('status')).toHaveText('Loading PDF…');
+    const loadingLayout = await layout();
+    releasePDF();
+    await expect(dialog.getByRole('img', { name: 'PDF page 1 of 2' })).toBeVisible();
+    expect(await layout()).toEqual(loadingLayout);
+    expect(loadingLayout.gutterAndBorders).toBe(17);
+    await expect.poll(paintedPage).toMatchObject({ blueCenter: true, zoom: 1 });
+
+    await dialog.getByRole('combobox', { name: 'Zoom', exact: true }).selectOption('2');
+    const zoomedPage = { blueCenter: true, withinPixelBudget: true, zoom: 2 };
+    await expect.poll(paintedPage).toEqual(zoomedPage);
+    expect(await layout()).toEqual(loadingLayout);
+    await page.setViewportSize({ width: 900, height: 966 });
+    expect((await layout()).paneWidth).toBeLessThan(loadingLayout.paneWidth);
+    await expect.poll(paintedPage).toEqual(zoomedPage);
+  });
+});
+
 test('confirmed same-metadata uploads create distinct immutable PDF versions', async ({ page }) => {
   await openCVLibrary(page);
   const name = 'Synthetic repeated versions',
@@ -444,4 +523,166 @@ test('an ambiguous archive retries the original intent and read-only users see n
   await expect(page.getByRole('button', { name: 'Archive', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '↑ Upload PDF' })).toHaveCount(0);
+});
+
+test('imported job details separate source requirements from description and agent notes', async ({
+  page,
+}) => {
+  const title = 'Synthetic scheduling internship',
+    duties =
+      'Build a calendar service and scheduling tools using TypeScript; stack includes SQLite and RabbitMQ.',
+    requirement =
+      'Requires relevant master’s enrollment, graduation by October 2029, and prior internship experience developing and launching products.',
+    sponsorship = 'Employer states it does not sponsor employment visas for this role.',
+    note = 'The scheduling project is a good fit. Ask about the team’s work with calendars.',
+    sourceID = 'synthetic-import-024';
+  function importedRationale(description: string, agentNote: string) {
+    return [
+      'Imported from AgentNewsfeed',
+      'Source ID: ' + sourceID,
+      'Source revision: 2',
+      'Saved in AgentNewsfeed: 2026-09-01',
+      'Source collection: Synthetic opportunities',
+      '',
+      'Location: Example City',
+      'Workplace: on_site',
+      'Employment period: May to August',
+      'Employment type: Internship',
+      'Compensation: $24 per hour',
+      'Tags: Scheduling, Research, Summer',
+      '',
+      'Source description:',
+      description,
+      '',
+      'Imported agent note:',
+      agentNote,
+    ].join('\n');
+  }
+  const rationale = importedRationale(`${duties} ${requirement} ${sponsorship}`, note);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '☀ Light', exact: true }).click();
+  await page.getByRole('link', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('button', { name: '+ Add application', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Job title', exact: true }).fill(title);
+  await page.getByRole('textbox', { name: 'Company', exact: true }).fill('Example Laboratory');
+  await page.getByRole('combobox', { name: 'Role type' }).selectOption('Internship');
+  await page
+    .getByRole('textbox', { name: 'Posting URL', exact: true })
+    .fill('https://example.test/synthetic-internship');
+  await page.getByRole('textbox', { name: 'Why this role', exact: true }).fill(rationale);
+  await page.getByRole('button', { name: 'Save application', exact: true }).click();
+
+  const job = page.getByRole('button', { name: title, exact: true });
+  await job.click();
+  const dialog = page.getByRole('dialog');
+  const description = dialog.getByRole('region', { name: 'Description', exact: true });
+  const requirements = dialog.getByRole('region', { name: 'Requirements', exact: true });
+  const agentNote = dialog.getByRole('region', { name: 'Agent Note', exact: true });
+  await expect(description).toContainText(duties);
+  await expect(description).toContainText(sponsorship);
+  await expect(description).not.toContainText(requirement);
+  await expect(requirements.getByRole('listitem')).toHaveText(requirement);
+  await expect(agentNote).toContainText(note);
+  await expect(dialog.getByText('On-site', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('list', { name: 'Tags' }).getByRole('listitem')).toHaveText([
+    'Scheduling',
+    'Research',
+    'Summer',
+  ]);
+  await expect(dialog.getByText(sourceID, { exact: true })).toBeHidden();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.screenshot({ path: '../.cache/job-details-light-desktop.png' });
+  await dialog.getByText('Source details', { exact: true }).click();
+  await expect(dialog.getByText(sourceID, { exact: true })).toBeVisible();
+  await expect(dialog.getByText('Imported from AgentNewsfeed', { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(job).toBeFocused();
+
+  await page.getByRole('button', { name: '☾ Dark', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await job.click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(requirements).toBeVisible();
+  await expect(dialog.getByText(sourceID, { exact: true })).toBeHidden();
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: '../.cache/job-details-dark-phone.png' });
+
+  const editor = dialog.getByRole('textbox', { name: 'Why this role', exact: true });
+  await dialog.getByRole('button', { name: 'Edit application', exact: false }).click();
+  await expect(editor).toHaveValue(rationale);
+  const ambiguous = 'Requires a portfolio.',
+    caveat = 'A course project may substitute.';
+  const benefitCondition =
+    'Applicants must live in Example City to qualify for the commuter benefit.';
+  const markup = '<img src="https://example.test/unsafe" alt="Synthetic markup">';
+  const explicitDescription = [
+    'Build synthetic dashboards.',
+    '',
+    'Minimum qualifications:',
+    '',
+    '- A degree or equivalent experience.',
+    '- Availability for the full term.',
+    '',
+    'Preferred qualifications:',
+    'Experience with maps is a plus.',
+    '',
+    ambiguous,
+    '',
+    caveat,
+    '',
+    'Benefits:',
+    '',
+    benefitCondition,
+  ].join('\n');
+  const explicitRationale = importedRationale(explicitDescription, markup);
+  await editor.fill(explicitRationale);
+  await dialog.getByRole('button', { name: 'Save application', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await job.click();
+  await expect.poll(() => description.locator('p').textContent()).toBe(explicitDescription);
+  await expect(requirements).toHaveCount(0);
+  await expect(agentNote).toContainText(markup);
+  await expect(agentNote.getByRole('img')).toHaveCount(0);
+
+  const mixedSections = [
+    'Build synthetic dashboards. Benefits: The office offers a transit subsidy. Requires a local address to qualify for the subsidy.',
+    'Build scheduling software.\n\nRequirements: Applicants must complete a course. Benefits: Our office offers a subsidy.',
+    'Build scheduling software. Requires a computer; Benefits: Our office offers a subsidy.',
+    'Build scheduling software. Requires proof of address for optional commuter benefits.',
+    `${duties} ${requirement.slice(0, -1)} to qualify for the relocation subsidy. ${sponsorship}`,
+    `The relocation allowance is available only under the following condition. ${requirement} ${sponsorship}`,
+    'Requirements:\n- At least one of the following\n  - Coursework\n  - A team project',
+    'Benefits:\nWe offer an optional commuter subsidy. The following requirements apply only to the subsidy.\n\nRequirements:\n- Provide proof of address.',
+    'Benefits:\n- Optional commuter subsidy.\n\n  Requirements:\n  - Provide proof of address.',
+    '## Benefits\n- Optional commuter subsidy.\n\n### Requirements\n- Provide proof of address.',
+    'Benefits\n========\n- Optional commuter subsidy.\n\nRequirements:\n- Provide proof of address.',
+    'Requirements:\n\n    - Example text',
+    '```text\nExample benefit documentation.\n\nRequirements:\n- Provide proof of address.\n\nBenefits:\n- Optional commuter subsidy.\n```',
+    '  **Requirements:**\n \n\n  - Provide proof of address.',
+    `Benefits:\n  ${markup}\n\nRequirements:\n- Provide proof of address.`,
+  ];
+  for (const mixedDescription of mixedSections) {
+    await dialog.getByRole('button', { name: 'Edit application', exact: false }).click();
+    await editor.fill(importedRationale(mixedDescription, note));
+    await dialog.getByRole('button', { name: 'Save application', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await job.click();
+    await expect.poll(() => description.locator('p').textContent()).toBe(mixedDescription);
+    await expect(requirements).toHaveCount(0);
+  }
+  await expect(description.getByRole('img')).toHaveCount(0);
+  await expect(description.locator('p')).toHaveCSS('white-space', 'pre-wrap');
+
+  await dialog.getByRole('button', { name: 'Edit application', exact: false }).click();
+  const malformed = explicitRationale.replace('Source revision:', 'Unrecognized revision:');
+  await editor.fill(malformed);
+  await dialog.getByRole('button', { name: 'Save application', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await job.click();
+  const fallback = dialog.locator('section').filter({
+    has: page.getByRole('heading', { name: 'Why this role / job information' }),
+  });
+  await expect(fallback.locator('p')).toHaveText(malformed);
+  await expect(dialog.getByText('Source details', { exact: true })).toHaveCount(0);
 });
