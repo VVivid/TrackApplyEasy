@@ -257,9 +257,9 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 		t.Fatalf("SDK draft: %+v %v", mcpDraft, err)
 	}
 	var created store.Application
-	raw, _ := json.Marshal(mcpDraft.StructuredContent)
-	if json.Unmarshal(raw, &created) != nil || created.ID == "" {
-		t.Fatalf("SDK draft content: %s", raw)
+	draftJSON, _ := json.Marshal(mcpDraft.StructuredContent)
+	if json.Unmarshal(draftJSON, &created) != nil || created.ID == "" {
+		t.Fatalf("SDK draft content: %s", draftJSON)
 	}
 	removed, err := session.CallTool(t.Context(), &sdk.CallToolParams{Name: "delete_application", Arguments: store.DeleteInput{IdempotencyKey: "mcp-delete-0001", ID: created.ID, ExpectedRevision: 1}})
 	if err != nil || removed.IsError {
