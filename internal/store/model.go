@@ -92,6 +92,17 @@ type UpdateInput struct {
 	ID               string `json:"id"`
 	ExpectedRevision int    `json:"expected_revision"`
 }
+
+// DeleteInput removes an unsubmitted draft at its current revision.
+type DeleteInput struct {
+	IdempotencyKey   string `json:"idempotency_key"`
+	ID               string `json:"id"`
+	ExpectedRevision int    `json:"expected_revision"`
+}
+type DeleteResult struct {
+	ID      string `json:"id"`
+	Deleted bool   `json:"deleted"`
+}
 type ResponseInput struct {
 	IdempotencyKey   string `json:"idempotency_key"`
 	ApplicationID    string `json:"application_id"`
