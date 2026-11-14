@@ -68,6 +68,20 @@ func New(s *store.Store, auth *identity.Manager, mcp http.Handler, static fs.FS)
 		out, err := s.UpdateApplication(r.Context(), p.Actor, in)
 		respond(w, out, err)
 	})
+	route("DELETE /api/v1/applications/{id}", store.Write, func(w http.ResponseWriter, r *http.Request) {
+		var in store.DeleteInput
+		if !decode(w, r, &in) {
+			return
+		}
+		if in.ID != "" && in.ID != r.PathValue("id") {
+			fail(w, store.ErrInvalid)
+			return
+		}
+		in.ID = r.PathValue("id")
+		p, _ := identity.FromContext(r.Context())
+		out, err := s.DeleteApplication(r.Context(), p.Actor, in)
+		respond(w, out, err)
+	})
 	route("GET /api/v1/applications/{id}/responses", store.Read, func(w http.ResponseWriter, r *http.Request) {
 		p, _ := identity.FromContext(r.Context())
 		out, err := s.Responses(r.Context(), p.Actor, r.PathValue("id"))

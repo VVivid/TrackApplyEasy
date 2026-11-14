@@ -754,7 +754,33 @@ function ApplicationEditor({
     intent = useIntent();
   const [error, setError] = useState(''),
     [saving, setSaving] = useState(false),
-    [submitted, setSubmitted] = useState(!!app?.applied_at);
+    [submitted, setSubmitted] = useState(!!app?.applied_at),
+    [confirmDelete, setConfirmDelete] = useState(false);
+  const deleteIntent = useIntent();
+  // Only unsubmitted drafts can be deleted; submitted history is immutable.
+  const canDelete = !!app && !app.applied_at && !readOnly;
+  async function remove() {
+    if (!app) return;
+    const payload = { expected_revision: app.revision };
+    setSaving(true);
+    try {
+      await api(
+        '/applications/' + encodeURIComponent(app.id),
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ ...payload, idempotency_key: deleteIntent(payload) }),
+        },
+        session.csrf_token,
+      );
+      deleteIntent.complete();
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+      setConfirmDelete(false);
+    } finally {
+      setSaving(false);
+    }
+  }
   // Keep a saved archived draft selection visible, but prefer active versions
   // for a new application. Archived historical submissions stay valid.
   const selectableCVs = cvs.filter((cv) => !cv.archived || cv.id === app?.cv_id);
@@ -890,6 +916,16 @@ function ApplicationEditor({
           </p>
         )}
         <div className="form-actions">
+          {canDelete &&
+            (confirmDelete ? (
+              <button type="button" className="danger" disabled={saving} onClick={remove}>
+                Confirm permanent delete
+              </button>
+            ) : (
+              <button type="button" disabled={saving} onClick={() => setConfirmDelete(true)}>
+                Delete draft
+              </button>
+            ))}
           <button type="button" onClick={onClose}>
             Close
           </button>

@@ -166,6 +166,40 @@ func (s *Store) UpdateApplication(ctx context.Context, a Actor, in UpdateInput) 
 	})
 }
 
+// DeleteApplication permanently removes an owned draft. Submitted rows keep
+// their immutable CV, submission time and response history, so they are
+// refused; a draft cannot have responses because responses need a submission.
+func (s *Store) DeleteApplication(ctx context.Context, a Actor, in DeleteInput) (DeleteResult, error) {
+	if !bounded(in.ID, 1, 64) || in.ExpectedRevision < 1 {
+		return DeleteResult{}, ErrInvalid
+	}
+	return write(ctx, s, a, "application.delete", in.IdempotencyKey, in, func(tx *sql.Tx) (DeleteResult, error) {
+		var appliedAt string
+		var revision int
+		err := tx.QueryRowContext(ctx, `SELECT applied_at,revision FROM applications WHERE owner=? AND id=?`, a.Owner, in.ID).Scan(&appliedAt, &revision)
+		if errors.Is(err, sql.ErrNoRows) {
+			return DeleteResult{}, ErrNotFound
+		}
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if revision != in.ExpectedRevision {
+			return DeleteResult{}, ErrConflict
+		}
+		if appliedAt != "" {
+			return DeleteResult{}, fmt.Errorf("%w: submitted applications cannot be deleted", ErrInvalid)
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM applications WHERE owner=? AND id=? AND revision=? AND applied_at=''`, a.Owner, in.ID, in.ExpectedRevision)
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return DeleteResult{}, ErrConflict
+		}
+		return DeleteResult{ID: in.ID, Deleted: true}, nil
+	})
+}
+
 func (s *Store) AddResponse(ctx context.Context, a Actor, in ResponseInput) (Application, error) {
 	// Responses may move a submitted application to any stage after Applied;
 	// Preparing and Applied are entry stages, not response outcomes.

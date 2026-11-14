@@ -328,3 +328,55 @@ func TestAnalysisRejectsUnboundedEmptyCalendarRanges(t *testing.T) {
 		t.Fatalf("unbounded report range: %v", err)
 	}
 }
+
+func TestDeleteDraftOnlyWithRevisionPermissionsAndRetry(t *testing.T) {
+	s, a, other := testStore(t)
+	cv := upload(t, s, a, "cv-delete-001")
+	draft, err := s.CreateApplication(t.Context(), a, ApplicationInput{IdempotencyKey: "draft-delete-01", Title: "Synthetic draft", Company: "Example", Kind: "Internship"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := DeleteInput{IdempotencyKey: "delete-intent-01", ID: draft.ID, ExpectedRevision: 1}
+	if _, err = s.DeleteApplication(t.Context(), Actor{Owner: a.Owner, Scopes: []string{Read}}, in); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("read-only delete: %v", err)
+	}
+	if _, err = s.DeleteApplication(t.Context(), other, in); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other owner delete: %v", err)
+	}
+	if _, err = s.DeleteApplication(t.Context(), a, DeleteInput{IdempotencyKey: "delete-stale-01", ID: draft.ID, ExpectedRevision: 2}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale revision delete: %v", err)
+	}
+	if _, err = s.DeleteApplication(t.Context(), a, DeleteInput{IdempotencyKey: "delete-badrev-1", ID: draft.ID}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing revision delete: %v", err)
+	}
+	deleted, err := s.DeleteApplication(t.Context(), a, in)
+	if err != nil || !deleted.Deleted || deleted.ID != draft.ID {
+		t.Fatalf("delete %+v %v", deleted, err)
+	}
+	if _, err = s.Application(t.Context(), a, draft.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted draft still readable: %v", err)
+	}
+	retry, err := s.DeleteApplication(t.Context(), a, in)
+	if err != nil || retry != deleted {
+		t.Fatalf("retry %+v %v", retry, err)
+	}
+	if _, err = s.DeleteApplication(t.Context(), a, DeleteInput{IdempotencyKey: "delete-intent-02", ID: draft.ID, ExpectedRevision: 1}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("new intent on deleted draft: %v", err)
+	}
+
+	submitted, err := s.CreateApplication(t.Context(), a, input(cv, "submitted-del-01"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withReply, err := s.AddResponse(t.Context(), a, ResponseInput{IdempotencyKey: "reply-delete-01", ApplicationID: submitted.ID, ExpectedRevision: 1, OccurredAt: "2026-01-03T14:00:00Z", Status: "Rejected", Summary: "Synthetic reply", Body: "Synthetic reply body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DeleteApplication(t.Context(), a, DeleteInput{IdempotencyKey: "delete-submit-1", ID: submitted.ID, ExpectedRevision: withReply.Revision}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("submitted delete: %v", err)
+	}
+	kept, err := s.Responses(t.Context(), a, submitted.ID)
+	if err != nil || len(kept) != 1 {
+		t.Fatalf("submitted history changed: %d %v", len(kept), err)
+	}
+}

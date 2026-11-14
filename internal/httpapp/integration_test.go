@@ -178,7 +178,7 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 	}
 	defer session.Close()
 	tools, err := session.ListTools(t.Context(), nil)
-	if err != nil || len(tools.Tools) != 12 {
+	if err != nil || len(tools.Tools) != 13 {
 		t.Fatalf("tools/list = %+v %v", tools, err)
 	}
 	in := store.ApplicationInput{IdempotencyKey: "sdk-create-001", Title: "Synthetic SDK role", Company: "Example", Kind: "Job", AppliedAt: "2026-01-02T10:00:00Z", CVID: cv.ID, Status: "Applied"}
@@ -230,6 +230,43 @@ func TestAuthenticatedAPIAndOfficialMCPSharePersistence(t *testing.T) {
 	stale := f.request(t, "PUT", "/api/v1/cvs/"+cv.ID+"/archive", strings.NewReader(`{"idempotency_key":"http-stale-archive","expected_revision":1,"archived":true}`), "application/json", cookie, csrf)
 	if stale.StatusCode != 409 {
 		t.Fatalf("stale archive: %d", stale.StatusCode)
+	}
+
+	// Draft deletion is shared by browser and MCP, CSRF-protected and
+	// revision-checked; submitted applications are never deletable.
+	res = f.request(t, "POST", "/api/v1/applications", strings.NewReader(`{"idempotency_key":"http-draft-del-01","title":"Synthetic draft","company":"Example","kind":"Internship","status":"Preparing"}`), "application/json", cookie, csrf)
+	var browserDraft store.Application
+	if res.StatusCode != 200 || json.NewDecoder(res.Body).Decode(&browserDraft) != nil || browserDraft.ID == "" {
+		t.Fatalf("browser draft: %d", res.StatusCode)
+	}
+	deleteBody := `{"idempotency_key":"http-delete-0001","expected_revision":1}`
+	if res = f.request(t, "DELETE", "/api/v1/applications/"+browserDraft.ID, strings.NewReader(deleteBody), "application/json", cookie, ""); res.StatusCode != 403 {
+		t.Fatalf("delete requires CSRF: %d", res.StatusCode)
+	}
+	if res = f.request(t, "DELETE", "/api/v1/applications/"+browserDraft.ID, strings.NewReader(`{"idempotency_key":"http-delete-0002","expected_revision":1,"id":"different"}`), "application/json", cookie, csrf); res.StatusCode != 400 {
+		t.Fatalf("delete id mismatch: %d", res.StatusCode)
+	}
+	if res = f.request(t, "DELETE", "/api/v1/applications/"+browserDraft.ID, strings.NewReader(deleteBody), "application/json", cookie, csrf); res.StatusCode != 200 {
+		t.Fatalf("browser delete: %d", res.StatusCode)
+	}
+	if res = f.request(t, "GET", "/api/v1/applications/"+browserDraft.ID, nil, "", cookie, ""); res.StatusCode != 404 {
+		t.Fatalf("deleted draft readable: %d", res.StatusCode)
+	}
+	mcpDraft, err := session.CallTool(t.Context(), &sdk.CallToolParams{Name: "create_application", Arguments: store.ApplicationInput{IdempotencyKey: "mcp-draft-del-01", Title: "Synthetic MCP draft", Company: "Example", Kind: "Internship", Status: "Preparing"}})
+	if err != nil || mcpDraft.IsError {
+		t.Fatalf("SDK draft: %+v %v", mcpDraft, err)
+	}
+	var created store.Application
+	draftJSON, _ := json.Marshal(mcpDraft.StructuredContent)
+	if json.Unmarshal(draftJSON, &created) != nil || created.ID == "" {
+		t.Fatalf("SDK draft content: %s", draftJSON)
+	}
+	removed, err := session.CallTool(t.Context(), &sdk.CallToolParams{Name: "delete_application", Arguments: store.DeleteInput{IdempotencyKey: "mcp-delete-0001", ID: created.ID, ExpectedRevision: 1}})
+	if err != nil || removed.IsError {
+		t.Fatalf("SDK delete: %+v %v", removed, err)
+	}
+	if res = f.request(t, "GET", "/api/v1/applications/"+created.ID, nil, "", cookie, ""); res.StatusCode != 404 {
+		t.Fatalf("MCP-deleted draft readable: %d", res.StatusCode)
 	}
 
 	if _, err = f.s.Enroll(t.Context(), f.provider.URL(), "other-test-subject", "Other synthetic owner"); err != nil {
